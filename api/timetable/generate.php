@@ -31,16 +31,8 @@ const WORKING_DAYS = [
     'Tuesday',  'Wednesday', 'Thursday',
 ];
 
-const TIME_SLOTS = [
-    ['start' => '08:00:00', 'end' => '09:30:00'],
-    ['start' => '10:00:00', 'end' => '11:30:00'],
-    ['start' => '13:00:00', 'end' => '14:30:00'],
-    ['start' => '14:30:00', 'end' => '16:00:00'],
-    ['start' => '16:00:00', 'end' => '17:30:00'],
-];
-
-const LUNCH_START = '12:00:00';
-const LUNCH_END   = '14:00:00';
+// TIME_SLOTS and LUNCH values are loaded dynamically from the
+// settings table via loadScheduleSettings() in the main block.
 
 const MAX_PROF_SESSIONS_PER_DAY  = 4;
 const MAX_GROUP_SESSIONS_PER_DAY = 4;
@@ -226,10 +218,14 @@ function generateDomains(array $data, array $cfg): array
                 continue;
             }
 
-            foreach (TIME_SLOTS as $slot) {
+            foreach ($cfg['time_slots'] as $slot) {
 
-                // HC7: skip lunch break slots
-                if (isInLunchBreak($slot['start'])) {
+                // HC7: skip lunch break slots when enabled
+                if (($cfg['hc7_lunch'] ?? true) && isInLunchBreak(
+                    $slot['start'],
+                    $cfg['lunch_start'],
+                    $cfg['lunch_end']
+                )) {
                     continue;
                 }
 
@@ -320,8 +316,8 @@ function checkHard(
     $groupId = (int)$candidate['group_id'];
     $roomId  = (int)$candidate['room_id'];
 
-    // HC7: Lunch break (always enforced)
-    if (isInLunchBreak($start)) {
+    // HC7: Lunch break (configurable)
+    if (($cfg['hc7_lunch'] ?? true) && isInLunchBreak($start, $cfg['lunch_start'], $cfg['lunch_end'])) {
         return fail('HC7: Lunch break slot');
     }
 
@@ -718,8 +714,8 @@ function validateSolution(array $assigned, array $cfg = []): array
     for ($i = 0; $i < count($assigned); $i++) {
         $a = $assigned[$i];
 
-        // Check lunch break
-        if (isInLunchBreak($a['time_start'])) {
+        // HC7: lunch break (configurable)
+        if (($cfg['hc7_lunch'] ?? true) && isInLunchBreak($a['time_start'], $cfg['lunch_start'] ?? '12:00:00', $cfg['lunch_end'] ?? '14:00:00')) {
             $violations[] = "HC7: session $i in lunch break";
         }
 
@@ -816,9 +812,12 @@ function saveToDatabase(PDO $pdo, array $assigned): void
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════
 
-function isInLunchBreak(string $timeStart): bool
-{
-    return ($timeStart >= LUNCH_START && $timeStart < LUNCH_END);
+function isInLunchBreak(
+    string $timeStart,
+    string $lunchStart = '12:00:00',
+    string $lunchEnd   = '14:00:00'
+): bool {
+    return ($timeStart >= $lunchStart && $timeStart < $lunchEnd);
 }
 
 /**
@@ -872,10 +871,26 @@ try {
     $input  = json_decode(file_get_contents('php://input'), true) ?? [];
     $rawCfg = $input['constraints'] ?? [];
 
+    // Load schedule settings (break time, session duration, etc.)
+    $scheduleSettings = loadScheduleSettings($pdo);
+    $timeSlots        = computeTimeSlots($scheduleSettings);
+
+    Logger::info(sprintf(
+        'Schedule: break=%dmin session=%dmin slots=%d [%s]',
+        $scheduleSettings['break_duration_minutes'],
+        $scheduleSettings['session_duration_minutes'],
+        count($timeSlots),
+        implode(', ', array_map(fn($s) => $s['start'], $timeSlots))
+    ));
+
     $config = [
+        'hc7_lunch'       => (bool)($rawCfg['hc7_lunch']        ?? true),
         'hc8_saturday'    => (bool)($rawCfg['hc8_saturday']    ?? true),
         'hc4_availability'=> (bool)($rawCfg['hc4_availability'] ?? true),
         'weights'         => [],
+        'time_slots'      => $timeSlots,
+        'lunch_start'     => $scheduleSettings['lunch_start_time'],
+        'lunch_end'       => $scheduleSettings['lunch_end_time'],
     ];
 
     // Merge per-SC weights (clamp 0–20)

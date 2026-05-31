@@ -22,6 +22,27 @@ $stmt = $pdo->query("
 ");
 $pendingRequests = $stmt->fetchColumn();
 
+// ─── Load sessions for preview ────────────────
+try {
+    $sessionList = $pdo->query("
+        SELECT
+            sa.id,
+            sa.session_type,
+            u.name          AS professor_name,
+            s.name          AS subject_name,
+            s.code          AS subject_code,
+            g.group_name,
+            g.level         AS group_level
+        FROM session_assignments sa
+        JOIN users        u ON u.id = sa.professor_id
+        JOIN subjects     s ON s.id = sa.subject_id
+        JOIN groups_table g ON g.id = sa.group_id
+        ORDER BY u.name, s.name, g.group_name
+    ")->fetchAll();
+} catch (\Exception $e) {
+    $sessionList = [];
+}
+
 require_once dirname(__DIR__, 2) . '/includes/header.php';
 ?>
 
@@ -99,10 +120,10 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                 ['HC2', 'No professor double-booking'],
                 ['HC3', 'No group time overlap'],
                 ['HC4', 'Respect professor availability'],
-                ['HC5', 'Max 3 sessions/day per professor'],
-                ['HC6', 'Max 3 sessions/day per group'],
-                ['HC7', 'No sessions 12:00-14:00 (lunch)'],
-                ['HC8', 'No sessions on Saturday'],
+                ['HC5', 'Max 4 sessions/day per professor'],
+                ['HC6', 'Max 4 sessions/day per group'],
+                ['HC7', 'No sessions during lunch (configurable)'],
+                ['HC8', 'No sessions on Saturday (configurable)'],
             ];
             foreach ($hcs as $hc): ?>
                 <div style="
@@ -203,6 +224,129 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
 
 </div>
 
+<!-- ─── Sessions Panel ───────────────────────── -->
+<div class="card" style="padding:0; overflow:hidden; margin-bottom:24px;">
+
+    <!-- Header -->
+    <div style="
+        padding:16px 20px;
+        background:var(--color-cream);
+        border-bottom:1px solid var(--color-border);
+        display:flex;
+        align-items:center;
+        justify-content:space-between;">
+        <h3 style="
+            font-size:14px; font-weight:700;
+            color:var(--color-text-dark);
+            display:flex; align-items:center; gap:8px;">
+            <i class="fa-solid fa-list-check" style="color:var(--color-mint-dark);"></i>
+            Sessions to Schedule
+            <span style="
+                background:var(--color-mint-light);
+                color:var(--color-mint-dark);
+                font-size:11px; font-weight:700;
+                padding:2px 8px;
+                border-radius:12px;">
+                <?= count($sessionList) ?>
+            </span>
+        </h3>
+        <a href="/TimeTable/pages/admin/sessions.php"
+           style="
+               display:flex; align-items:center; gap:6px;
+               padding:6px 14px;
+               background:var(--color-mint-light);
+               color:var(--color-mint-dark);
+               border-radius:var(--radius-sm);
+               font-size:13px; font-weight:600;
+               text-decoration:none;
+               transition:var(--transition);"
+           onmouseover="this.style.background='var(--color-mint-dark)'; this.style.color='white';"
+           onmouseout="this.style.background='var(--color-mint-light)'; this.style.color='var(--color-mint-dark)';">
+            <i class="fa-solid fa-pen-to-square" style="font-size:12px;"></i>
+            Manage Sessions
+        </a>
+    </div>
+
+    <?php if (empty($sessionList)): ?>
+        <div style="
+            text-align:center; padding:40px;
+            color:var(--color-text-light);">
+            <i class="fa-solid fa-triangle-exclamation"
+               style="font-size:32px; color:#e08a2a; display:block; margin-bottom:12px;"></i>
+            <p style="font-size:14px; font-weight:600; color:var(--color-text-dark); margin-bottom:6px;">
+                No sessions defined
+            </p>
+            <p style="font-size:13px; margin-bottom:16px;">
+                Add sessions before generating the timetable.
+            </p>
+            <a href="/TimeTable/pages/admin/sessions.php"
+               style="
+                   display:inline-flex; align-items:center; gap:6px;
+                   padding:8px 20px;
+                   background:var(--color-mint-dark); color:white;
+                   border-radius:var(--radius-md);
+                   font-size:13px; font-weight:600;
+                   text-decoration:none;">
+                <i class="fa-solid fa-plus"></i>
+                Add Sessions
+            </a>
+        </div>
+    <?php else: ?>
+        <div style="max-height:280px; overflow-y:auto;">
+            <table style="width:100%; border-collapse:collapse;">
+                <thead>
+                    <tr style="background:var(--color-sage); position:sticky; top:0;">
+                        <th style="padding:10px 16px; text-align:left; font-size:11px; font-weight:600; color:var(--color-text-mid);">#</th>
+                        <th style="padding:10px 16px; text-align:left; font-size:11px; font-weight:600; color:var(--color-text-mid);">Professor</th>
+                        <th style="padding:10px 16px; text-align:left; font-size:11px; font-weight:600; color:var(--color-text-mid);">Subject</th>
+                        <th style="padding:10px 16px; text-align:left; font-size:11px; font-weight:600; color:var(--color-text-mid);">Group</th>
+                        <th style="padding:10px 16px; text-align:left; font-size:11px; font-weight:600; color:var(--color-text-mid);">Type</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($sessionList as $i => $s):
+                        $typeInfo = match($s['session_type']) {
+                            'lecture' => ['label' => 'Lecture', 'bg' => 'var(--color-mint-light)', 'color' => 'var(--color-mint-dark)'],
+                            'lab'     => ['label' => 'Lab',     'bg' => 'var(--color-rose-light)', 'color' => 'var(--color-rose-dark)'],
+                            'seminar' => ['label' => 'Seminar', 'bg' => 'var(--color-sage)',       'color' => '#5a8a6a'],
+                            default   => ['label' => ucfirst($s['session_type']), 'bg' => 'var(--color-cream)', 'color' => 'var(--color-text-mid)'],
+                        };
+                    ?>
+                        <tr style="
+                            border-bottom:1px solid var(--color-border);
+                            background:<?= $i % 2 === 0 ? 'var(--color-white)' : 'var(--color-cream)' ?>;">
+                            <td style="padding:10px 16px; font-size:12px; color:var(--color-text-light);"><?= $i + 1 ?></td>
+                            <td style="padding:10px 16px; font-size:13px; font-weight:500; color:var(--color-text-dark);">
+                                <?= htmlspecialchars($s['professor_name']) ?>
+                            </td>
+                            <td style="padding:10px 16px; font-size:13px; color:var(--color-text-dark);">
+                                <?= htmlspecialchars($s['subject_name']) ?>
+                                <span style="font-size:11px; color:var(--color-text-light); margin-left:4px;">
+                                    <?= htmlspecialchars($s['subject_code']) ?>
+                                </span>
+                            </td>
+                            <td style="padding:10px 16px; font-size:13px; color:var(--color-text-dark);">
+                                <?= htmlspecialchars($s['group_name']) ?>
+                            </td>
+                            <td style="padding:10px 16px;">
+                                <span style="
+                                    padding:3px 10px;
+                                    background:<?= $typeInfo['bg'] ?>;
+                                    color:<?= $typeInfo['color'] ?>;
+                                    border-radius:12px;
+                                    font-size:11px; font-weight:600;">
+                                    <?= $typeInfo['label'] ?>
+                                </span>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php endif; ?>
+
+</div>
+
 <!-- ─── Generate Card ────────────────────────── -->
 <div class="card" style="text-align:center; padding:40px;">
 
@@ -274,6 +418,7 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
     <!-- Generate Button -->
     <button id="generateBtn"
             onclick="startGeneration()"
+            <?= empty($sessionList) ? 'disabled title="Add sessions first"' : '' ?>
             style="
                 display:inline-flex;
                 align-items:center;

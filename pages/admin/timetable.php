@@ -3,6 +3,7 @@
 require_once dirname(__DIR__, 2) . '/config/app.php';
 require_once dirname(__DIR__, 2) . '/includes/auth.php';
 require_once dirname(__DIR__, 2) . '/includes/db.php';
+require_once dirname(__DIR__, 2) . '/includes/functions.php';
 
 requireRole('admin');
 $user = currentUser();
@@ -119,18 +120,80 @@ $days = [
     'Tuesday',  'Wednesday', 'Thursday',
 ];
 
-$slots = [
-    ['start' => '08:00:00', 'end' => '09:30:00',
-     'label' => '08:00 - 09:30'],
-    ['start' => '10:00:00', 'end' => '11:30:00',
-     'label' => '10:00 - 11:30'],
-    ['start' => '13:00:00', 'end' => '14:30:00',
-     'label' => '13:00 - 14:30'],
-    ['start' => '14:30:00', 'end' => '16:00:00',
-     'label' => '14:30 - 16:00'],
-    ['start' => '16:00:00', 'end' => '17:30:00',
-     'label' => '16:00 - 17:30'],
-];
+// Load schedule settings and compute slots dynamically
+$scheduleSettings = loadScheduleSettings($pdo);
+$slots            = computeTimeSlots($scheduleSettings);
+
+// Add any extra time_starts already in the DB that don't
+// match a computed slot (backwards-compatibility with old data)
+$existingStarts = array_unique(array_column($allSessions, 'time_start'));
+$slotStarts     = array_column($slots, 'start');
+foreach ($existingStarts as $ts) {
+    if (!in_array($ts, $slotStarts)) {
+        $startEpoch = strtotime($ts);
+        $sessionSec = (int)$scheduleSettings['session_duration_minutes'] * 60;
+        $slots[] = [
+            'start' => $ts,
+            'end'   => date('H:i:s', $startEpoch + $sessionSec),
+            'label' => date('H:i', $startEpoch)
+                     . ' - '
+                     . date('H:i', $startEpoch + $sessionSec),
+        ];
+    }
+}
+usort($slots, fn($a, $b) => strcmp($a['start'], $b['start']));
+
+// ─── Build schedule items (slots + breaks + lunch) ─
+$lunchStartTs   = strtotime($scheduleSettings['lunch_start_time']);
+$lunchEndTs     = strtotime($scheduleSettings['lunch_end_time']);
+$absorbBreaks   = !empty($scheduleSettings['absorb_breaks_into_lunch']);
+$scheduleItems  = [];
+
+for ($i = 0; $i < count($slots); $i++) {
+    $scheduleItems[] = ['type' => 'slot', 'data' => $slots[$i]];
+
+    if ($i >= count($slots) - 1) {
+        continue;
+    }
+
+    $gapStartTs = strtotime($slots[$i]['end']);
+    $gapEndTs   = strtotime($slots[$i + 1]['start']);
+
+    if ($gapEndTs <= $gapStartTs) {
+        continue;
+    }
+
+    $overlapsLunch = ($gapStartTs < $lunchEndTs && $gapEndTs > $lunchStartTs);
+
+    if ($overlapsLunch) {
+        // Lunch always cancels the adjacent breaks on both sides.
+        // The pre-lunch break is never shown (lunch starts right after
+        // the last morning session). The post-lunch break doesn't exist
+        // because computeTimeSlots resumes slots directly at lunchEnd.
+        $lFrom     = max($gapStartTs, $lunchStartTs);
+        $lTo       = min($gapEndTs,   $lunchEndTs);
+        $lunchMins = (int)(($lTo - $lFrom) / 60);
+
+        $scheduleItems[] = [
+            'type'     => 'lunch',
+            'from'     => date('H:i', $lFrom),
+            'to'       => date('H:i', $lTo),
+            'mins'     => $lunchMins,
+            'absorbed' => $absorbBreaks, // badge only, no functional difference
+        ];
+    } else {
+        // Regular break between two adjacent session slots
+        $mins = (int)(($gapEndTs - $gapStartTs) / 60);
+        if ($mins > 0) {
+            $scheduleItems[] = [
+                'type' => 'break',
+                'from' => date('H:i', $gapStartTs),
+                'to'   => date('H:i', $gapEndTs),
+                'mins' => $mins,
+            ];
+        }
+    }
+}
 
 // ─── Index grid by [day][time_start] ──────────
 $grid = [];
@@ -435,7 +498,81 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
 
             <!-- Body -->
             <tbody>
-                <?php foreach ($slots as $slot): ?>
+                <?php foreach ($scheduleItems as $item): ?>
+
+                <?php if ($item['type'] === 'break'): ?>
+                <!-- ── Break row ───────────── -->
+                <tr style="height:28px;">
+                    <td colspan="<?= 1 + count($days) ?>"
+                        style="
+                            padding:0 16px;
+                            background:repeating-linear-gradient(
+                                45deg,
+                                #f8f9fa,
+                                #f8f9fa 4px,
+                                #f1f3f5 4px,
+                                #f1f3f5 8px
+                            );
+                            border-top:1px dashed #ced4da;
+                            border-bottom:1px dashed #ced4da;
+                            text-align:center;">
+                        <span style="
+                            font-size:11px;
+                            font-weight:600;
+                            color:#9ca3af;
+                            display:flex;
+                            align-items:center;
+                            justify-content:center;
+                            gap:6px;
+                            white-space:nowrap;">
+                            <i class="fa-solid fa-mug-hot" style="font-size:10px;"></i>
+                            Break &nbsp;·&nbsp; <?= $item['mins'] ?> min
+                            &nbsp;
+                            <span style="font-weight:400;"><?= $item['from'] ?> – <?= $item['to'] ?></span>
+                        </span>
+                    </td>
+                </tr>
+
+                <?php elseif ($item['type'] === 'lunch'): ?>
+                <!-- ── Lunch break row ─────── -->
+                <tr style="height:38px;">
+                    <td colspan="<?= 1 + count($days) ?>"
+                        style="
+                            padding:0 16px;
+                            background:linear-gradient(90deg,#fef9ec,#fffbf0,#fef9ec);
+                            border-top:2px solid #f59e0b;
+                            border-bottom:2px solid #f59e0b;
+                            text-align:center;">
+                        <span style="
+                            font-size:12px;
+                            font-weight:700;
+                            color:#92400e;
+                            display:flex;
+                            align-items:center;
+                            justify-content:center;
+                            gap:8px;
+                            white-space:nowrap;">
+                            <i class="fa-solid fa-utensils" style="font-size:11px; color:#f59e0b;"></i>
+                            Lunch Break &nbsp;·&nbsp; <?= $item['mins'] ?> min
+                            &nbsp;
+                            <span style="font-weight:500; color:#b45309;"><?= $item['from'] ?> – <?= $item['to'] ?></span>
+                            <?php if (!empty($item['absorbed'])): ?>
+                                <span style="
+                                    font-size:10px; font-weight:600;
+                                    padding:1px 7px;
+                                    background:#fde68a;
+                                    color:#92400e;
+                                    border-radius:10px;
+                                    border:1px solid #f59e0b;">
+                                    adjacent breaks hidden
+                                </span>
+                            <?php endif; ?>
+                        </span>
+                    </td>
+                </tr>
+
+                <?php else: /* slot */ ?>
+                <?php $slot = $item['data']; ?>
                 <tr>
                     <td class="time-cell">
                         <?= $slot['label'] ?>
@@ -622,7 +759,8 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                         </td>
                     <?php endforeach; ?>
                 </tr>
-                <?php endforeach; ?>
+                <?php endif; /* end slot/break/lunch */ ?>
+                <?php endforeach; /* scheduleItems */ ?>
             </tbody>
 
         </table>
@@ -650,6 +788,28 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
             <div class="legend-item">
                 <span class="legend-dot legend-td"></span>
                 TD (Seminar)
+            </div>
+            <div class="legend-item" style="gap:6px;">
+                <span style="
+                    display:inline-block;
+                    width:12px; height:12px;
+                    border-radius:2px;
+                    background:repeating-linear-gradient(45deg,#f1f3f5,#f1f3f5 3px,#e9ecef 3px,#e9ecef 6px);
+                    border:1px dashed #ced4da;
+                    flex-shrink:0;">
+                </span>
+                Break
+            </div>
+            <div class="legend-item" style="gap:6px;">
+                <span style="
+                    display:inline-block;
+                    width:12px; height:12px;
+                    border-radius:2px;
+                    background:#fef3c7;
+                    border:1.5px solid #f59e0b;
+                    flex-shrink:0;">
+                </span>
+                Lunch Break
             </div>
         </div>
 
@@ -815,11 +975,11 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                             class="form-input"
                             style="height:46px; padding:0 14px;"
                             onchange="autoSetEnd(); updateSlotStatus()">
-                        <option value="08:00:00">08:00</option>
-                        <option value="10:00:00">10:00</option>
-                        <option value="13:00:00">13:00</option>
-                        <option value="14:30:00">14:30</option>
-                        <option value="16:00:00">16:00</option>
+                        <?php foreach ($slots as $sl): ?>
+                            <option value="<?= $sl['start'] ?>">
+                                <?= substr($sl['start'], 0, 5) ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
 
@@ -828,11 +988,11 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                     <select id="sessionEnd"
                             class="form-input"
                             style="height:46px; padding:0 14px;">
-                        <option value="09:30:00">09:30</option>
-                        <option value="11:30:00">11:30</option>
-                        <option value="14:30:00">14:30</option>
-                        <option value="16:00:00">16:00</option>
-                        <option value="17:30:00">17:30</option>
+                        <?php foreach ($slots as $sl): ?>
+                            <option value="<?= $sl['end'] ?>">
+                                <?= substr($sl['end'], 0, 5) ?>
+                            </option>
+                        <?php endforeach; ?>
                     </select>
                 </div>
 
@@ -1111,9 +1271,8 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                                 ['id'=>'HC1','label'=>'No Room Double-Booking',         'icon'=>'fa-door-open'],
                                 ['id'=>'HC2','label'=>'No Professor Double-Booking',    'icon'=>'fa-chalkboard-user'],
                                 ['id'=>'HC3','label'=>'No Group Overlap',               'icon'=>'fa-users'],
-                                ['id'=>'HC5','label'=>'Max 3 Prof Sessions/Day',        'icon'=>'fa-clock'],
-                                ['id'=>'HC6','label'=>'Max 3 Group Sessions/Day',       'icon'=>'fa-calendar-day'],
-                                ['id'=>'HC7','label'=>'No Lunch Break (12:00–14:00)',   'icon'=>'fa-utensils'],
+                                ['id'=>'HC5','label'=>'Max 4 Prof Sessions/Day',        'icon'=>'fa-clock'],
+                                ['id'=>'HC6','label'=>'Max 4 Group Sessions/Day',       'icon'=>'fa-calendar-day'],
                             ];
                             foreach ($fixedHC as $hc): ?>
                             <div style="
@@ -1153,6 +1312,32 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                                 letter-spacing:.05em;">
                                 Configurable — toggle on / off
                             </span>
+                        </div>
+
+                        <!-- HC7: No Lunch Sessions -->
+                        <div style="
+                            display:flex;align-items:center;gap:14px;
+                            padding:12px 16px;
+                            border-bottom:1px solid #fecaca;">
+                            <label class="gen-toggle">
+                                <input type="checkbox" id="hc7Lunch" checked
+                                       onchange="saveGenSettings()">
+                                <span class="gen-toggle-slider"></span>
+                            </label>
+                            <div style="flex:1;">
+                                <div style="
+                                    font-size:13px;font-weight:600;
+                                    color:var(--color-text-dark);
+                                    display:flex;align-items:center;gap:6px;">
+                                    <span style="
+                                        color:#dc2626;font-weight:700;
+                                        font-size:11px;">HC7</span>
+                                    No Lunch Break Sessions
+                                </div>
+                                <div style="font-size:12px;color:var(--color-text-light);margin-top:2px;">
+                                    Prevent sessions from being scheduled during the lunch window
+                                </div>
+                            </div>
                         </div>
 
                         <!-- HC8: No Saturday -->
@@ -1545,14 +1730,13 @@ function updateSlotStatus() {
     }
 }
 
-// ─── Time slot map ────────────────────────────
-const startToEnd = {
-    '08:00:00': '09:30:00',
-    '10:00:00': '11:30:00',
-    '13:00:00': '14:30:00',
-    '14:30:00': '16:00:00',
-    '16:00:00': '17:30:00',
-};
+// ─── Time slot map (built from PHP) ──────────
+const startToEnd = <?= json_encode(
+    array_combine(
+        array_column($slots, 'start'),
+        array_column($slots, 'end')
+    )
+) ?>;
 
 function autoSetEnd() {
     const start = document.getElementById('sessionStart').value;
@@ -1798,7 +1982,8 @@ function saveGenSettings() {
         sc[k] = document.getElementById('chk_' + k)?.checked ?? true;
     }
     localStorage.setItem(GEN_LS_KEY, JSON.stringify({
-        hc8: document.getElementById('hc8Saturday')?.checked    ?? true,
+        hc7: document.getElementById('hc7Lunch')?.checked        ?? true,
+        hc8: document.getElementById('hc8Saturday')?.checked     ?? true,
         hc4: document.getElementById('hc4Availability')?.checked ?? true,
         weights: { ...weights },
         sc,
@@ -1810,8 +1995,10 @@ function loadGenSettings() {
         const raw = localStorage.getItem(GEN_LS_KEY);
         if (!raw) return;
         const s = JSON.parse(raw);
+        const hc7El = document.getElementById('hc7Lunch');
         const hc8El = document.getElementById('hc8Saturday');
         const hc4El = document.getElementById('hc4Availability');
+        if (hc7El && s.hc7 !== undefined) hc7El.checked = s.hc7;
         if (hc8El && s.hc8 !== undefined) hc8El.checked = s.hc8;
         if (hc4El && s.hc4 !== undefined) hc4El.checked = s.hc4;
         if (s.weights) {
@@ -1883,6 +2070,7 @@ function collectConfig() {
         w[key] = document.getElementById('chk_' + key).checked ? weights[key] : 0;
     }
     return {
+        hc7_lunch:        document.getElementById('hc7Lunch').checked,
         hc8_saturday:     document.getElementById('hc8Saturday').checked,
         hc4_availability: document.getElementById('hc4Availability').checked,
         weights: w,

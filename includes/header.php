@@ -273,6 +273,12 @@
                     <span>Subjects</span>
                 </a>
 
+                <a href="/TimeTable/pages/admin/sessions.php"
+                   class="nav-item <?= ($activePage==='sessions') ? 'active':'' ?>">
+                    <i class="fa-solid fa-list-check"></i>
+                    <span>Sessions</span>
+                </a>
+
                 <a href="/TimeTable/pages/admin/departments.php"
                    class="nav-item <?= ($activePage==='departments') ? 'active':'' ?>">
                     <i class="fa-solid fa-building-columns"></i>
