@@ -1,0 +1,68 @@
+/* ─── Reset & Base ───────────────────────────── */
+*, *::before, *::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    /* ─── Color Palette ─── */
+    --color-mint:    #C0E1D2;
+    --color-sage:    #E5EEE4;
+    --color-cream:   #F6F4E8;
+    --color-rose:    #DC9B9B;
+
+    /* ─── Derived ─── */
+    --color-mint-dark:   #8ECBB6;
+    --color-mint-light:  #EAF5F0;
+    --color-rose-dark:   #C47A7A;
+    --color-rose-light:  #F7E5E5;
+    --color-text-dark:   #2C3E35;
+    --color-text-mid:    #5A6B62;
+    --color-text-light:  #8FA09A;
+    --color-white:       #FFFFFF;
+    --color-border:      #D8E8E2;
+
+    /* ─── Typography ─── */
+    --font-main: 'Inter', sans-serif;
+
+    /* ─── Shadows ─── */
+    --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 20px rgba(0,0,0,0.10);
+    --shadow-lg: 0 8px 40px rgba(0,0,0,0.14);
+
+    /* ─── Border Radius ─── */
+    --radius-sm:  6px;
+    --radius-md:  12px;
+    --radius-lg:  20px;
+    --radius-xl:  32px;
+
+    /* ─── Transitions ─── */
+    --transition: all 0.25s ease;
+}
+
+html, body {
+    height: 100%;
+    font-family: var(--font-main);
+    background-color: var(--color-cream);
+    color: var(--color-text-dark);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+a {
+    text-decoration: none;
+    color: inherit;
+}
+
+button {
+    font-family: var(--font-main);
+    cursor: pointer;
+    border: none;
+    outline: none;
+}
+
+input, select, textarea {
+    font-family: var(--font-main);
+    outline: none;
+}
