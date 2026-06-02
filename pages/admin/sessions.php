@@ -227,24 +227,6 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                     <span id="lunchValidation" style="font-size:12px; display:none;"></span>
                 </div>
 
-                <!-- Absorb toggle -->
-                <div style="display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:12px; border-top:1px solid var(--color-border);">
-                    <label class="gen-toggle" style="flex-shrink:0;">
-                        <input type="checkbox"
-                               id="absorbToggle"
-                               <?= !empty($scheduleSettings['absorb_breaks_into_lunch']) ? 'checked' : '' ?>
-                               onchange="saveAbsorb(this.checked)">
-                        <span class="gen-toggle-slider"></span>
-                    </label>
-                    <div>
-                        <p style="font-size:12px; font-weight:600; color:var(--color-text-dark); margin:0;">
-                            Show "adjacent breaks hidden" badge on lunch row
-                        </p>
-                        <p style="font-size:11px; color:var(--color-text-light); margin:2px 0 0;">
-                            Adjacent breaks are always cancelled by lunch — this badge makes it visible in the timetable
-                        </p>
-                    </div>
-                </div>
             </div>
 
         </div>
@@ -862,15 +844,6 @@ function saveLunch() {
     }, 600);
 }
 
-// ─── Absorb toggle ────────────────────────────
-async function saveAbsorb(checked) {
-    await saveSettings(
-        { absorb_breaks_into_lunch: checked ? 1 : 0 },
-        checked
-            ? 'Adjacent breaks absorbed into lunch'
-            : 'Breaks shown separately'
-    );
-}
 
 async function deleteSession(id, label) {
     if (!confirm(`Remove session "${label}"?`)) return;

@@ -143,10 +143,10 @@ foreach ($existingStarts as $ts) {
 }
 usort($slots, fn($a, $b) => strcmp($a['start'], $b['start']));
 
-// ─── Build schedule items (slots + breaks + lunch) ─
+// ─── Build schedule items (slots + breaks + lunch + gaps) ─
 $lunchStartTs   = strtotime($scheduleSettings['lunch_start_time']);
 $lunchEndTs     = strtotime($scheduleSettings['lunch_end_time']);
-$absorbBreaks   = !empty($scheduleSettings['absorb_breaks_into_lunch']);
+$breakMins      = (int)$scheduleSettings['break_duration_minutes'];
 $scheduleItems  = [];
 
 for ($i = 0; $i < count($slots); $i++) {
@@ -166,27 +166,48 @@ for ($i = 0; $i < count($slots); $i++) {
     $overlapsLunch = ($gapStartTs < $lunchEndTs && $gapEndTs > $lunchStartTs);
 
     if ($overlapsLunch) {
-        // Lunch always cancels the adjacent breaks on both sides.
-        // The pre-lunch break is never shown (lunch starts right after
-        // the last morning session). The post-lunch break doesn't exist
-        // because computeTimeSlots resumes slots directly at lunchEnd.
+        // Dead time before the lunch window starts
+        if ($gapStartTs < $lunchStartTs) {
+            $preMins = (int)(($lunchStartTs - $gapStartTs) / 60);
+            if ($preMins > 0) {
+                $scheduleItems[] = [
+                    'type' => 'gap',
+                    'from' => date('H:i', $gapStartTs),
+                    'to'   => date('H:i', $lunchStartTs),
+                    'mins' => $preMins,
+                ];
+            }
+        }
+
         $lFrom     = max($gapStartTs, $lunchStartTs);
         $lTo       = min($gapEndTs,   $lunchEndTs);
         $lunchMins = (int)(($lTo - $lFrom) / 60);
-
         $scheduleItems[] = [
-            'type'     => 'lunch',
-            'from'     => date('H:i', $lFrom),
-            'to'       => date('H:i', $lTo),
-            'mins'     => $lunchMins,
-            'absorbed' => $absorbBreaks, // badge only, no functional difference
+            'type' => 'lunch',
+            'from' => date('H:i', $lFrom),
+            'to'   => date('H:i', $lTo),
+            'mins' => $lunchMins,
         ];
+
+        // Dead time after the lunch window ends
+        if ($gapEndTs > $lunchEndTs) {
+            $postMins = (int)(($gapEndTs - $lunchEndTs) / 60);
+            if ($postMins > 0) {
+                $scheduleItems[] = [
+                    'type' => 'gap',
+                    'from' => date('H:i', $lunchEndTs),
+                    'to'   => date('H:i', $gapEndTs),
+                    'mins' => $postMins,
+                ];
+            }
+        }
     } else {
-        // Regular break between two adjacent session slots
         $mins = (int)(($gapEndTs - $gapStartTs) / 60);
         if ($mins > 0) {
+            // Any inter-slot gap longer than the configured break is dead time
+            $type = ($mins > $breakMins) ? 'gap' : 'break';
             $scheduleItems[] = [
-                'type' => 'break',
+                'type' => $type,
                 'from' => date('H:i', $gapStartTs),
                 'to'   => date('H:i', $gapEndTs),
                 'mins' => $mins,
@@ -556,17 +577,39 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                             Lunch Break &nbsp;·&nbsp; <?= $item['mins'] ?> min
                             &nbsp;
                             <span style="font-weight:500; color:#b45309;"><?= $item['from'] ?> – <?= $item['to'] ?></span>
-                            <?php if (!empty($item['absorbed'])): ?>
-                                <span style="
-                                    font-size:10px; font-weight:600;
-                                    padding:1px 7px;
-                                    background:#fde68a;
-                                    color:#92400e;
-                                    border-radius:10px;
-                                    border:1px solid #f59e0b;">
-                                    adjacent breaks hidden
-                                </span>
-                            <?php endif; ?>
+                        </span>
+                    </td>
+                </tr>
+
+                <?php elseif ($item['type'] === 'gap'): ?>
+                <!-- ── Gap row ────────────────── -->
+                <tr style="height:28px;">
+                    <td colspan="<?= 1 + count($days) ?>"
+                        style="
+                            padding:0 16px;
+                            background:repeating-linear-gradient(
+                                45deg,
+                                #fff7f7,
+                                #fff7f7 4px,
+                                #ffe4e4 4px,
+                                #ffe4e4 8px
+                            );
+                            border-top:1px dashed #f87171;
+                            border-bottom:1px dashed #f87171;
+                            text-align:center;">
+                        <span style="
+                            font-size:11px;
+                            font-weight:600;
+                            color:#dc2626;
+                            display:flex;
+                            align-items:center;
+                            justify-content:center;
+                            gap:6px;
+                            white-space:nowrap;">
+                            <i class="fa-solid fa-triangle-exclamation" style="font-size:10px;"></i>
+                            Gap &nbsp;·&nbsp; <?= $item['mins'] ?> min
+                            &nbsp;
+                            <span style="font-weight:400;"><?= $item['from'] ?> – <?= $item['to'] ?></span>
                         </span>
                     </td>
                 </tr>

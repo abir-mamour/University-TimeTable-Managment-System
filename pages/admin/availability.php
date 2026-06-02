@@ -34,11 +34,39 @@ $professors = $pdo->query("
     ORDER BY u.name
 ")->fetchAll();
 
+// ─── Professors with unseen changes ───────────
+$profsWithChanges = [];
+try {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS availability_changes (
+            id                INT AUTO_INCREMENT PRIMARY KEY,
+            professor_id      INT NOT NULL,
+            day               VARCHAR(20) NOT NULL,
+            time_start        VARCHAR(10) NOT NULL,
+            time_end          VARCHAR(10) NOT NULL,
+            change_type       ENUM('added','removed') NOT NULL,
+            changed_by        ENUM('admin','professor') NOT NULL,
+            changed_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            seen_by_admin     TINYINT(1) NOT NULL DEFAULT 0,
+            seen_by_professor TINYINT(1) NOT NULL DEFAULT 0,
+            INDEX idx_prof (professor_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    $rows = $pdo->query("
+        SELECT DISTINCT professor_id
+        FROM availability_changes
+        WHERE changed_by = 'professor' AND seen_by_admin = 0
+    ")->fetchAll(PDO::FETCH_COLUMN);
+    $profsWithChanges = array_flip($rows);
+} catch (PDOException $e) {}
+
 // ─── Selected professor ───────────────────────
-$selectedProfId = (int)($_GET['prof_id'] ?? 0);
-$selectedProf   = null;
-$availabilities = [];
-$checkedSlots   = [];
+$selectedProfId   = (int)($_GET['prof_id'] ?? 0);
+$selectedProf     = null;
+$availabilities   = [];
+$checkedSlots     = [];
+$highlightSlots   = [];
+$profChangeCount  = 0;
 
 if ($selectedProfId) {
     foreach ($professors as $p) {
@@ -64,6 +92,34 @@ if ($selectedProfId) {
             $key = $a['day'] . '_' . substr($a['time_start'], 0, 5);
             $checkedSlots[$key] = true;
         }
+
+        // Fetch unseen professor changes for this professor
+        try {
+            $chgStmt = $pdo->prepare("
+                SELECT day, time_start, change_type
+                FROM availability_changes
+                WHERE professor_id = ? AND changed_by = 'professor' AND seen_by_admin = 0
+            ");
+            $chgStmt->execute([$selectedProfId]);
+            $unseenChanges = $chgStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            foreach ($unseenChanges as $c) {
+                $k = $c['day'] . '_' . substr($c['time_start'], 0, 5);
+                $highlightSlots[$k] = $c['change_type'];
+            }
+            $profChangeCount = count($unseenChanges);
+
+            // Mark as seen
+            if ($profChangeCount > 0) {
+                $pdo->prepare("
+                    UPDATE availability_changes
+                    SET seen_by_admin = 1
+                    WHERE professor_id = ? AND changed_by = 'professor' AND seen_by_admin = 0
+                ")->execute([$selectedProfId]);
+                // Remove from the unseen set so dropdown badge clears immediately
+                unset($profsWithChanges[$selectedProfId]);
+            }
+        } catch (PDOException $e) {}
     }
 }
 
@@ -125,12 +181,10 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                     <option value="">— Choose a professor —</option>
                     <?php foreach ($professors as $p): ?>
                         <option value="<?= $p['id'] ?>"
-                            <?= $selectedProfId === (int)$p['id']
-                                ? 'selected' : '' ?>>
+                            <?= $selectedProfId === (int)$p['id'] ? 'selected' : '' ?>>
                             <?= htmlspecialchars($p['name']) ?>
-                            <?= $p['department']
-                                ? '(' . htmlspecialchars($p['department']) . ')'
-                                : '' ?>
+                            <?= $p['department'] ? '(' . htmlspecialchars($p['department']) . ')' : '' ?>
+                            <?= isset($profsWithChanges[(int)$p['id']]) ? ' ⚠ Updated' : '' ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -175,6 +229,31 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
 </div>
 
 <?php else: ?>
+
+<?php if ($profChangeCount > 0): ?>
+<!-- ─── Professor Changes Banner ──────────────── -->
+<div style="
+    display:flex; align-items:center; gap:12px;
+    padding:14px 18px;
+    background:#fff7ed;
+    border:1px solid #f59e0b;
+    border-radius:var(--radius-md);
+    margin-bottom:16px;">
+    <i class="fa-solid fa-triangle-exclamation"
+       style="color:#f59e0b; font-size:18px; flex-shrink:0;"></i>
+    <p style="font-size:13px; color:#92400e; line-height:1.5; margin:0;">
+        <strong><?= htmlspecialchars($selectedProf['name']) ?> updated their availability</strong> —
+        <?= $profChangeCount ?> slot<?= $profChangeCount !== 1 ? 's' : '' ?> changed since your last view.
+        Added slots
+        <span style="display:inline-block; width:10px; height:10px;
+                     background:#22c55e; border-radius:2px; vertical-align:middle;"></span>
+        and removed slots
+        <span style="display:inline-block; width:10px; height:10px;
+                     background:#ef4444; border-radius:2px; vertical-align:middle;"></span>
+        are highlighted below.
+    </p>
+</div>
+<?php endif; ?>
 
 <!-- ─── Alert Box ─────────────────────────────── -->
 <div id="alertBox"
@@ -279,8 +358,31 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                     </td>
 
                     <?php foreach ($days as $day):
-                        $key       = $day . '_' . $timeKey;
-                        $isChecked = isset($checkedSlots[$key]);
+                        $key        = $day . '_' . $timeKey;
+                        $isChecked  = isset($checkedSlots[$key]);
+                        $changeType = $highlightSlots[$key] ?? null;
+
+                        if ($changeType === 'added') {
+                            $bg     = 'var(--color-mint-dark)';
+                            $border = '#16a34a';
+                            $shadow = '0 0 0 3px rgba(22,163,74,0.25)';
+                            $icon   = '<i class="fa-solid fa-check" style="color:white; font-size:14px;"></i>';
+                        } elseif ($changeType === 'removed') {
+                            $bg     = '#fef2f2';
+                            $border = '#ef4444';
+                            $shadow = '0 0 0 3px rgba(239,68,68,0.2)';
+                            $icon   = '<i class="fa-solid fa-minus" style="color:#ef4444; font-size:13px;"></i>';
+                        } elseif ($isChecked) {
+                            $bg     = 'var(--color-mint-dark)';
+                            $border = 'var(--color-mint-dark)';
+                            $shadow = 'none';
+                            $icon   = '<i class="fa-solid fa-check" style="color:white; font-size:14px;"></i>';
+                        } else {
+                            $bg     = 'var(--color-sage)';
+                            $border = 'var(--color-border)';
+                            $shadow = 'none';
+                            $icon   = '<i class="fa-solid fa-plus" style="color:var(--color-text-light); font-size:12px;"></i>';
+                        }
                     ?>
                         <td style="padding:10px 12px; text-align:center;">
                             <div class="avail-slot <?= $isChecked ? 'avail-on' : 'avail-off' ?>"
@@ -292,21 +394,22 @@ require_once dirname(__DIR__, 2) . '/includes/header.php';
                                  style="
                                     width:100%; min-height:48px;
                                     border-radius:var(--radius-md);
-                                    cursor:pointer;
+                                    cursor:pointer; position:relative;
                                     display:flex; align-items:center; justify-content:center;
                                     transition:all 0.2s ease;
-                                    background:<?= $isChecked
-                                        ? 'var(--color-mint-dark)'
-                                        : 'var(--color-sage)' ?>;
-                                    border:2px solid <?= $isChecked
-                                        ? 'var(--color-mint-dark)'
-                                        : 'var(--color-border)' ?>;">
-                                <?php if ($isChecked): ?>
-                                    <i class="fa-solid fa-check"
-                                       style="color:white; font-size:14px;"></i>
-                                <?php else: ?>
-                                    <i class="fa-solid fa-plus"
-                                       style="color:var(--color-text-light); font-size:12px;"></i>
+                                    background:<?= $bg ?>;
+                                    border:2px solid <?= $border ?>;
+                                    box-shadow:<?= $shadow ?>;">
+                                <?= $icon ?>
+                                <?php if ($changeType): ?>
+                                    <span style="
+                                        position:absolute; top:-7px; right:-7px;
+                                        font-size:9px; font-weight:700; line-height:1;
+                                        padding:2px 5px; border-radius:8px;
+                                        background:<?= $changeType === 'added' ? '#16a34a' : '#ef4444' ?>;
+                                        color:white; white-space:nowrap; pointer-events:none;">
+                                        <?= $changeType === 'added' ? 'Added' : 'Removed' ?>
+                                    </span>
                                 <?php endif; ?>
                             </div>
                         </td>
